@@ -17,11 +17,11 @@ namespace SKYNET
 
         public static void ReleaseMemory()
         {
-            // Check privilege
-            //if (!SetIncreasePrivilege("SeDebugPrivilege"))
-            //{
-            //    return;
-            //}
+            var span = DateTime.Now - CleanedTime;
+            if (span.Seconds < 10)
+            {
+                return;
+            }
 
             Task.Run(delegate
             {
@@ -40,19 +40,9 @@ namespace SKYNET
                 }
                 IsBusy = false;
             });
-            //GC.Collect();
-        }
-        public static void ReleaseMemory(Process process)
-        {
 
-            try
-            {
-                EmptyWorkingSet(process.Handle);
-                GC.Collect();
-            }
-            catch
-            {
-            }
+            frmMain.frm.ReleasedTimes++;
+            CleanedTime = DateTime.Now;
         }
 
         internal static bool SetIncreasePrivilege(string privilegeName)

@@ -1,0 +1,15 @@
+C:\Users\Administrador\source\repos\[SKYNET] RAM Optimizer\[SKYNET] RAM Optimizer\bin\Debug\[SKYNET] RAM Optimizer.exe.config
+C:\Users\Administrador\source\repos\[SKYNET] RAM Optimizer\[SKYNET] RAM Optimizer\bin\Debug\[SKYNET] RAM Optimizer.exe
+C:\Users\Administrador\source\repos\[SKYNET] RAM Optimizer\[SKYNET] RAM Optimizer\bin\Debug\[SKYNET] RAM Optimizer.pdb
+C:\Users\Administrador\source\repos\[SKYNET] RAM Optimizer\[SKYNET] RAM Optimizer\obj\Debug\[SKYNET] RAM Optimizer.csprojAssemblyReference.cache
+C:\Users\Administrador\source\repos\[SKYNET] RAM Optimizer\[SKYNET] RAM Optimizer\obj\Debug\SKYNET.frmMain.resources
+C:\Users\Administrador\source\repos\[SKYNET] RAM Optimizer\[SKYNET] RAM Optimizer\obj\Debug\SKYNET.Controls.GradiantBox.resources
+C:\Users\Administrador\source\repos\[SKYNET] RAM Optimizer\[SKYNET] RAM Optimizer\obj\Debug\SKYNET.GUI.Controls.ProcessControl.resources
+C:\Users\Administrador\source\repos\[SKYNET] RAM Optimizer\[SKYNET] RAM Optimizer\obj\Debug\SKYNET.GUI.frmBase.resources
+C:\Users\Administrador\source\repos\[SKYNET] RAM Optimizer\[SKYNET] RAM Optimizer\obj\Debug\SKYNET.Properties.Resources.resources
+C:\Users\Administrador\source\repos\[SKYNET] RAM Optimizer\[SKYNET] RAM Optimizer\obj\Debug\SKYNET.Controls.SKYNET_CloseBox.resources
+C:\Users\Administrador\source\repos\[SKYNET] RAM Optimizer\[SKYNET] RAM Optimizer\obj\Debug\SKYNET.Controls.SKYNET_MinimizeBox.resources
+C:\Users\Administrador\source\repos\[SKYNET] RAM Optimizer\[SKYNET] RAM Optimizer\obj\Debug\[SKYNET] RAM Optimizer.csproj.GenerateResource.cache
+C:\Users\Administrador\source\repos\[SKYNET] RAM Optimizer\[SKYNET] RAM Optimizer\obj\Debug\[SKYNET] RAM Optimizer.csproj.CoreCompileInputs.cache
+C:\Users\Administrador\source\repos\[SKYNET] RAM Optimizer\[SKYNET] RAM Optimizer\obj\Debug\[SKYNET] RAM Optimizer.exe
+C:\Users\Administrador\source\repos\[SKYNET] RAM Optimizer\[SKYNET] RAM Optimizer\obj\Debug\[SKYNET] RAM Optimizer.pdb

@@ -99,7 +99,7 @@ namespace SKYNET
             }
         }
 
-        private int ReleasedTimes
+        public int ReleasedTimes
         {
             get { return releasedTimes; }
             set
@@ -178,7 +178,6 @@ namespace SKYNET
             if (!MemoryHelper.IsBusy)
             {
                 MemoryHelper.ReleaseMemory();
-                ReleasedTimes++;
             }
         }
 

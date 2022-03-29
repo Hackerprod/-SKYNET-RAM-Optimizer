@@ -1,9 +1,0 @@
-27/03/2022 8:19:25: El parámetro no es correcto:    en System.Diagnostics.Process.set_ProcessorAffinity(IntPtr value)
-   en SKYNET.frmMain..ctor() en C:\Users\Administrador\source\repos\[SKYNET] RAM Optimizer\[SKYNET] RAM Optimizer\frmMain.cs:línea 124
-   en SKYNET.Program.Main() en C:\Users\Administrador\source\repos\[SKYNET] RAM Optimizer\[SKYNET] RAM Optimizer\Program.cs:línea 39:
-27/03/2022 8:56:56: Acceso denegado:    en System.Diagnostics.Process.Kill()
-   en SKYNET.GUI.Controls.ProcessControl.PB_Kill_Click(Object sender, EventArgs e) en C:\Users\Administrador\source\repos\[SKYNET] RAM Optimizer\[SKYNET] RAM Optimizer\GUI\Controls\ProcessControl.cs:línea 108
-   en System.Windows.Forms.Control.OnClick(EventArgs e)
-   en System.Windows.Forms.Control.WmMouseUp(Message& m, MouseButtons button, Int32 clicks)
-   en System.Windows.Forms.Control.WndProc(Message& m)
-   en System.Windows.Forms.NativeWindow.Callback(IntPtr hWnd, Int32 msg, IntPtr wparam, IntPtr lparam):

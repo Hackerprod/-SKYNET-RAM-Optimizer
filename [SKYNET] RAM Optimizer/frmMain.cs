@@ -20,6 +20,11 @@ namespace SKYNET
 {
     public partial class frmMain : frmBase
     {
+        private const int DEFAULT_MEMORY_THRESHOLD_PERCENT = 80;
+        private const int MEMORY_CHECK_INTERVAL_MS = 1000;
+        private const int PROCESS_CHECK_INTERVAL_MS = 1000;
+        private const int TOP_PROCESSES_COUNT = 5;
+
         private long _TotalPhysicalMemorySize;
         private long _FreePhysicalMemory;
         private long _TotalVirtualMemorySize;
@@ -43,7 +48,7 @@ namespace SKYNET
             set
             {
                 _TotalPhysicalMemorySize = value;
-                LB_TotalVisibleMemorySize.Text = modCommon.LongToMbytes(value);
+                SafeUpdateLabel(LB_TotalVisibleMemorySize, modCommon.LongToMbytes(value));
             }
         }
 
@@ -52,22 +57,21 @@ namespace SKYNET
             get { return _FreePhysicalMemory; }
             set
             {
-
                 _FreePhysicalMemory = value;
-                LB_FreePhysicalMemory.Text = modCommon.LongToMbytes(value);
+                SafeUpdateLabel(LB_FreePhysicalMemory, modCommon.LongToMbytes(value));
 
                 UsedPhysicalMemory = TotalPhysicalMemorySize - _FreePhysicalMemory;
-                LB_UsedPhysicalMemory.Text = modCommon.LongToMbytes(UsedPhysicalMemory);
+                SafeUpdateLabel(LB_UsedPhysicalMemory, modCommon.LongToMbytes(UsedPhysicalMemory));
 
                 var Percent = 100 * UsedPhysicalMemory / TotalPhysicalMemorySize;
-                LB_PercentUsedPhysicalMemory.Text = Percent + " %";
+                SafeUpdateLabel(LB_PercentUsedPhysicalMemory, Percent + " %");
 
                 if (Percent > percentToFree)
                 {
                     ReleaseMemory();
                 }
 
-                SetProgressValue(PN_Physical_Progress, Percent);
+                SafeSetProgressValue(PN_Physical_Progress, Percent);
             }
         }
 
@@ -77,7 +81,7 @@ namespace SKYNET
             set
             {
                 _TotalVirtualMemorySize = value;
-                LB_TotalVirtualMemorySize.Text = modCommon.LongToMbytes(value * 1024);
+                SafeUpdateLabel(LB_TotalVirtualMemorySize, modCommon.LongToMbytes(value * 1024));
             }
         }
 
@@ -87,15 +91,15 @@ namespace SKYNET
             set
             {
                 _FreeVirtualMemory = value;
-                LB_FreeVirtualMemory.Text = modCommon.LongToMbytes(value * 1024);
+                SafeUpdateLabel(LB_FreeVirtualMemory, modCommon.LongToMbytes(value * 1024));
 
                 UsedVirtualMemory = TotalVirtualMemorySize - _FreeVirtualMemory;
-                LB_UsedVirtualMemory.Text = modCommon.LongToMbytes(UsedVirtualMemory * 1024);
+                SafeUpdateLabel(LB_UsedVirtualMemory, modCommon.LongToMbytes(UsedVirtualMemory * 1024));
 
                 var Percent = 100 * UsedVirtualMemory / TotalVirtualMemorySize;
-                LB_PercentUsedVirtualMemory.Text = Percent + " %";
+                SafeUpdateLabel(LB_PercentUsedVirtualMemory, Percent + " %");
 
-                SetProgressValue(PN_Virtual_Progress, Percent);
+                SafeSetProgressValue(PN_Virtual_Progress, Percent);
             }
         }
 
@@ -105,7 +109,7 @@ namespace SKYNET
             set
             {
                 releasedTimes = value;
-                LB_ReleasedTimes.Text = $"Released Memory {releasedTimes} times";
+                SafeUpdateLabel(LB_ReleasedTimes, $"Released Memory {releasedTimes} times");
             }
         }
 
@@ -114,8 +118,15 @@ namespace SKYNET
             InitializeComponent();
             frm = this;
             base.SetMouseMove(panel1);
-            CheckForIllegalCrossThreadCalls = false;
-            percentToFree = 80;
+
+            // Load saved settings
+            percentToFree = Properties.Settings.Default.PercentToFree;
+            if (percentToFree <= 0 || percentToFree > 100)
+            {
+                percentToFree = DEFAULT_MEMORY_THRESHOLD_PERCENT;
+            }
+            textBox1.Text = percentToFree.ToString();
+
             CurrentProcess = Process.GetCurrentProcess();
             Processes = new List<Process>();
             Machine = new ComputerInfo();
@@ -132,7 +143,7 @@ namespace SKYNET
 
         private void CloseBox1_Clicked(object sender, EventArgs e)
         {
-            CurrentProcess.Kill();
+            Application.Exit();
         }
 
         private void InitializeCheckThread()
@@ -163,7 +174,7 @@ namespace SKYNET
                             FreeVirtualMemory = freeVirtualMemory;
                         }
                     }
-                    Thread.Sleep(1000);
+                    Thread.Sleep(MEMORY_CHECK_INTERVAL_MS);
                 }
             });
         }
@@ -177,23 +188,63 @@ namespace SKYNET
         {
             if (!MemoryHelper.IsBusy)
             {
-                MemoryHelper.ReleaseMemory();
+                // Disable button and show visual feedback
+                SafeSetButtonEnabled(skyneT_Button1, false);
+                SafeUpdateButtonText(skyneT_Button1, "RELEASING...");
+
+                Task.Run(() =>
+                {
+                    MemoryHelper.ReleaseMemory();
+
+                    // Re-enable button after operation completes
+                    System.Threading.Thread.Sleep(500); // Small delay to show feedback
+                    SafeSetButtonEnabled(skyneT_Button1, true);
+                    SafeUpdateButtonText(skyneT_Button1, "FREE MEMORY");
+                });
             }
         }
 
         private void TextBox1_TextChanged(object sender, EventArgs e)
         {
+            // Just update in real-time, validation happens on Leave
+        }
+
+        private void TextBox1_Leave(object sender, EventArgs e)
+        {
+            if (string.IsNullOrWhiteSpace(textBox1.Text))
+            {
+                textBox1.Text = percentToFree.ToString();
+                return;
+            }
+
             if (!int.TryParse(textBox1.Text, out int percent))
             {
-                MessageBox.Show("The Percent is invalid");
+                MessageBox.Show("The Percent is invalid. Please enter a number between 1 and 100.", "Invalid Input", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                textBox1.Text = percentToFree.ToString();
                 return;
             }
-            if (percent > 100)
+
+            if (percent <= 0 || percent > 100)
             {
-                MessageBox.Show("The Percent is invalid, must be < 100");
+                MessageBox.Show("The Percent must be between 1 and 100.", "Invalid Range", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                textBox1.Text = percentToFree.ToString();
                 return;
             }
+
             percentToFree = percent;
+
+            // Save the setting
+            Properties.Settings.Default.PercentToFree = percent;
+            Properties.Settings.Default.Save();
+        }
+
+        private void TextBox1_KeyPress(object sender, KeyPressEventArgs e)
+        {
+            // Only allow digits, backspace, and control characters
+            if (!char.IsControl(e.KeyChar) && !char.IsDigit(e.KeyChar))
+            {
+                e.Handled = true;
+            }
         }
 
         private void MinimizeBox1_Clicked(object sender, EventArgs e)
@@ -278,9 +329,53 @@ namespace SKYNET
             panel14.BackColor = Color.FromArgb(48, 48, 48);
         }
 
-        private void SetProgressValue(SKYNET_ProgressBar Progress, long percent)
+        // Thread-safe UI update methods
+        private void SafeUpdateLabel(Label label, string text)
         {
-            Progress.Value = (int)percent;
+            if (label.InvokeRequired)
+            {
+                label.BeginInvoke(new Action(() => label.Text = text));
+            }
+            else
+            {
+                label.Text = text;
+            }
+        }
+
+        private void SafeSetProgressValue(SKYNET_ProgressBar progress, long percent)
+        {
+            if (progress.InvokeRequired)
+            {
+                progress.BeginInvoke(new Action(() => progress.Value = (int)percent));
+            }
+            else
+            {
+                progress.Value = (int)percent;
+            }
+        }
+
+        private void SafeSetButtonEnabled(Control button, bool enabled)
+        {
+            if (button.InvokeRequired)
+            {
+                button.BeginInvoke(new Action(() => button.Enabled = enabled));
+            }
+            else
+            {
+                button.Enabled = enabled;
+            }
+        }
+
+        private void SafeUpdateButtonText(Control button, string text)
+        {
+            if (button.InvokeRequired)
+            {
+                button.BeginInvoke(new Action(() => button.Text = text));
+            }
+            else
+            {
+                button.Text = text;
+            }
         }
 
         private void InitializeProcessManager()
@@ -291,12 +386,52 @@ namespace SKYNET
                 {
                     if (!MemoryHelper.SetIncreasePrivilege("SeDebugPrivilege"))
                     {
-                        //return;
+                        // Continue even if privilege elevation fails
                     }
 
                     Processes.Clear();
-                    Processes = Process.GetProcesses().ToList().OrderByDescending(x => x.WorkingSet64).Take(5).ToList();
-                    Processes.Sort((n1, n2) => MemoryHelper.GetUsedMemory(n1).CompareTo(MemoryHelper.GetUsedMemory(n2)));
+                    // Get accessible processes only
+                    var allProcesses = new List<Process>();
+                    foreach (var p in Process.GetProcesses())
+                    {
+                        try
+                        {
+                            if (p != null && !p.HasExited)
+                            {
+                                allProcesses.Add(p);
+                            }
+                        }
+                        catch (System.ComponentModel.Win32Exception)
+                        {
+                            // Access denied - skip silently
+                        }
+                        catch (InvalidOperationException)
+                        {
+                            // Process exited - skip silently
+                        }
+                    }
+
+                    // Sort by memory usage, handling access denied gracefully
+                    Processes = allProcesses
+                        .OrderByDescending(x =>
+                        {
+                            try { return x.WorkingSet64; }
+                            catch { return 0; }
+                        })
+                        .Take(TOP_PROCESSES_COUNT)
+                        .ToList();
+
+                    Processes.Sort((n1, n2) =>
+                    {
+                        try
+                        {
+                            return MemoryHelper.GetUsedMemory(n1).CompareTo(MemoryHelper.GetUsedMemory(n2));
+                        }
+                        catch
+                        {
+                            return 0;
+                        }
+                    });
 
                     foreach (var process in Processes)
                     {
@@ -316,20 +451,42 @@ namespace SKYNET
                                     processControl.ManageProcess(process);
                                     processControl.Name = process.Id.ToString();
                                     processControl.ProcessExited += ProcessExited;
+                                    processControl.Dock = DockStyle.Top;
 
                                     if (PN_ProcessContainer.InvokeRequired)
                                     {
-                                        PN_ProcessContainer.Invoke(new Action(() => { PN_ProcessContainer.Controls.Add(processControl); }));
+                                        PN_ProcessContainer.BeginInvoke(new Action(() =>
+                                        {
+                                            try
+                                            {
+                                                PN_ProcessContainer.Controls.Add(processControl);
+                                            }
+                                            catch (Exception ex)
+                                            {
+                                                Program.Write($"Error adding process control: {ex.Message}");
+                                            }
+                                        }));
                                     }
                                     else
                                     {
                                         PN_ProcessContainer.Controls.Add(processControl);
                                     }
-                                    processControl.Dock = DockStyle.Top;
                                 }
                             }
                         }
-                        catch { }
+                        catch (System.ComponentModel.Win32Exception)
+                        {
+                            // Access denied - skip silently
+                        }
+                        catch (InvalidOperationException)
+                        {
+                            // Process exited - skip silently
+                        }
+                        catch (Exception ex)
+                        {
+                            // Only log unexpected errors
+                            Program.Write("Unexpected error managing process control: " + ex.GetType().Name + ": " + ex.Message);
+                        }
                     }
 
                     for (int i = 0; i < PN_ProcessContainer.Controls.Count; i++)
@@ -343,7 +500,19 @@ namespace SKYNET
                                 PN_ProcessContainer.Controls.RemoveAt(i);
                             }
                         }
-                        catch  { }
+                        catch (System.ComponentModel.Win32Exception)
+                        {
+                            // Access denied - skip silently
+                        }
+                        catch (InvalidOperationException)
+                        {
+                            // Process exited - skip silently
+                        }
+                        catch (Exception ex)
+                        {
+                            // Only log unexpected errors
+                            Program.Write("Unexpected error removing process control: " + ex.GetType().Name + ": " + ex.Message);
+                        }
                     }
 
                     for (int i = 0; i < Processes.Count; i++)
@@ -356,20 +525,59 @@ namespace SKYNET
                                 PN_ProcessContainer.Controls.SetChildIndex(Controls[0], i);
                             }
                         }
-                        catch { }
+                        catch (System.ComponentModel.Win32Exception)
+                        {
+                            // Access denied - skip silently
+                        }
+                        catch (InvalidOperationException)
+                        {
+                            // Process exited - skip silently
+                        }
+                        catch (Exception ex)
+                        {
+                            // Only log unexpected errors
+                            Program.Write("Unexpected error reordering process controls: " + ex.GetType().Name + ": " + ex.Message);
+                        }
                     }
-                    
-                    Thread.Sleep(1000);
+
+                    Thread.Sleep(PROCESS_CHECK_INTERVAL_MS);
                 }
-                catch
+                catch (System.ComponentModel.Win32Exception)
                 {
+                    // Access denied errors are expected - don't log
+                }
+                catch (InvalidOperationException)
+                {
+                    // Process exited errors are expected - don't log
+                }
+                catch (Exception ex)
+                {
+                    // Only log unexpected errors
+                    Program.Write("Unexpected error in process manager loop: " + ex.GetType().Name + ": " + ex.Message);
                 }
             }
         }
 
         private void ProcessExited(object sender, UserControl e)
         {
-            PN_ProcessContainer.Controls.Remove(e);
+            try
+            {
+                if (e != null && PN_ProcessContainer.Controls.Contains(e))
+                {
+                    if (PN_ProcessContainer.InvokeRequired)
+                    {
+                        PN_ProcessContainer.BeginInvoke(new Action(() => PN_ProcessContainer.Controls.Remove(e)));
+                    }
+                    else
+                    {
+                        PN_ProcessContainer.Controls.Remove(e);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Program.Write($"Error removing exited process control: {ex.Message}");
+            }
         }
 
         private void PB_Icon_Click(object sender, EventArgs e)

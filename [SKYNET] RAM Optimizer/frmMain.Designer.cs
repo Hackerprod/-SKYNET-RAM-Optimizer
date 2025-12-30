@@ -865,7 +865,9 @@
             this.textBox1.TabIndex = 27;
             this.textBox1.Text = "80";
             this.textBox1.TextChanged += new System.EventHandler(this.TextBox1_TextChanged);
-            // 
+            this.textBox1.Leave += new System.EventHandler(this.TextBox1_Leave);
+            this.textBox1.KeyPress += new System.Windows.Forms.KeyPressEventHandler(this.TextBox1_KeyPress);
+            //
             // label7
             // 
             this.label7.AutoSize = true;

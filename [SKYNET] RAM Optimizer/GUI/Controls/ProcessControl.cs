@@ -38,15 +38,38 @@ namespace SKYNET.GUI.Controls
                 LB_Name.Text = Process.ProcessName;
                 LB_Usage.Text = modCommon.LongToMbytes(Process.WorkingSet64);
 
-                string fileName = Process.MainModule.FileName;
-                PB_Icon.Image = modCommon.IconFromFile(fileName);
+                // Try to get process icon, but handle access denied gracefully
+                try
+                {
+                    string fileName = Process.MainModule.FileName;
+                    PB_Icon.Image = modCommon.IconFromFile(fileName);
+                }
+                catch (System.ComponentModel.Win32Exception)
+                {
+                    // 64-bit process accessed from 32-bit or access denied - use default icon
+                    PB_Icon.Image = new Icon(SystemIcons.Application, 32, 32).ToBitmap();
+                }
+                catch (InvalidOperationException)
+                {
+                    // Process has exited
+                    PB_Icon.Image = new Icon(SystemIcons.Application, 32, 32).ToBitmap();
+                }
 
                 Process.Exited += Process_Exited;
                 WaitForExit();
             }
-            catch (Exception)
+            catch (System.ComponentModel.Win32Exception)
             {
-
+                // Access denied or 64-bit process - already handled above
+            }
+            catch (InvalidOperationException)
+            {
+                // Process exited - skip silently
+            }
+            catch (Exception ex)
+            {
+                // Only log unexpected errors
+                Program.Write("Unexpected error initializing process control: " + ex.GetType().Name + ": " + ex.Message);
             }
         }
 
@@ -65,8 +88,20 @@ namespace SKYNET.GUI.Controls
                         closeId = ProcessId;
                         processById.WaitForExit();
                     }
-                    catch
+                    catch (System.ComponentModel.Win32Exception)
                     {
+                        // Access denied - process exited
+                        Process_Exited(this, null);
+                    }
+                    catch (InvalidOperationException)
+                    {
+                        // Process exited
+                        Process_Exited(this, null);
+                    }
+                    catch (Exception ex)
+                    {
+                        // Only log unexpected errors
+                        Program.Write("Unexpected error waiting for process exit: " + ex.GetType().Name + ": " + ex.Message);
                         Process_Exited(this, null);
                     }
                 }
@@ -75,8 +110,15 @@ namespace SKYNET.GUI.Controls
         }
         private void Process_Exited(object sender, EventArgs e)
         {
-            Exited = true;
-            ProcessExited?.Invoke(this, this);
+            try
+            {
+                Exited = true;
+                ProcessExited?.Invoke(this, this);
+            }
+            catch (Exception ex)
+            {
+                Program.Write($"Error in Process_Exited handler: {ex.Message}");
+            }
         }
 
         private void Control_MouseMove(object sender, MouseEventArgs e)
@@ -105,7 +147,31 @@ namespace SKYNET.GUI.Controls
         {
             if (Process != null)
             {
-                Process.Kill();
+                try
+                {
+                    if (!Process.HasExited)
+                    {
+                        Process.Kill();
+                        Process.WaitForExit(1000); // Wait up to 1 second for process to exit
+                        Process_Exited(this, null); // Manually trigger exit handler
+                    }
+                }
+                catch (System.ComponentModel.Win32Exception ex)
+                {
+                    // Access denied or process already exited
+                    Program.Write($"Could not kill process {Process.ProcessName}: {ex.Message}");
+                    MessageBox.Show($"Could not terminate process: {ex.Message}", "Access Denied", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                }
+                catch (InvalidOperationException)
+                {
+                    // Process already exited
+                    Process_Exited(this, null);
+                }
+                catch (Exception ex)
+                {
+                    Program.WriteException("Error killing process from UI", ex);
+                    MessageBox.Show($"Error terminating process: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
             }
         }
 
@@ -118,9 +184,28 @@ namespace SKYNET.GUI.Controls
         {
             if (!Exited)
             {
-                Process.Refresh();
-                var use = MemoryHelper.GetUsedMemory(Process);
-                LB_Usage.Text = modCommon.LongToMbytes(use);
+                try
+                {
+                    Process.Refresh();
+                    var use = MemoryHelper.GetUsedMemory(Process);
+                    LB_Usage.Text = modCommon.LongToMbytes(use);
+                }
+                catch (System.ComponentModel.Win32Exception)
+                {
+                    // Access denied - mark as exited
+                    Process_Exited(this, null);
+                }
+                catch (InvalidOperationException)
+                {
+                    // Process exited
+                    Process_Exited(this, null);
+                }
+                catch (Exception ex)
+                {
+                    // Only log unexpected errors
+                    Program.Write("Unexpected error updating process memory: " + ex.GetType().Name + ": " + ex.Message);
+                    Process_Exited(this, null);
+                }
             }
         }
     }

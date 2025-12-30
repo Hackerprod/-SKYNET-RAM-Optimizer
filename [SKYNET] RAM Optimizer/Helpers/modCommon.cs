@@ -77,9 +77,9 @@ namespace SKYNET
                 }
                 return selectedIcon.ToBitmap();
             }
-            catch (Exception)
+            catch
             {
-
+                // Icon extraction failed - try alternative method silently
             }
 
             try
@@ -88,6 +88,7 @@ namespace SKYNET
             }
             catch
             {
+                // Use default icon silently
                 image = new Icon(SystemIcons.Application, 256, 256).ToBitmap();
             }
 

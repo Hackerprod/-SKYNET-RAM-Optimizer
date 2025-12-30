@@ -22,5 +22,17 @@ namespace SKYNET.Properties {
                 return defaultInstance;
             }
         }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("80")]
+        public int PercentToFree {
+            get {
+                return ((int)(this["PercentToFree"]));
+            }
+            set {
+                this["PercentToFree"] = value;
+            }
+        }
     }
 }

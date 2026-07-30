@@ -10,7 +10,6 @@ using System.Data;
 using System.Diagnostics;
 using System.Drawing;
 using System.Linq;
-using System.Management;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -35,6 +34,12 @@ namespace SKYNET
         private int releasedTimes;
         private List<Process> Processes;
         private ComputerInfo Machine;
+        private readonly System.Windows.Forms.Timer memoryTimer;
+        private readonly System.Windows.Forms.Timer processTimer;
+        private readonly CancellationTokenSource shutdown = new CancellationTokenSource();
+        private bool memoryPressure;
+        private int consecutiveHighMemorySamples;
+        private bool samplingActivity;
 
         public static frmMain frm;
 
@@ -65,11 +70,6 @@ namespace SKYNET
 
                 var Percent = 100 * UsedPhysicalMemory / TotalPhysicalMemorySize;
                 SafeUpdateLabel(LB_PercentUsedPhysicalMemory, Percent + " %");
-
-                if (Percent > percentToFree)
-                {
-                    ReleaseMemory();
-                }
 
                 SafeSetProgressValue(PN_Physical_Progress, Percent);
             }
@@ -130,78 +130,106 @@ namespace SKYNET
             CurrentProcess = Process.GetCurrentProcess();
             Processes = new List<Process>();
             Machine = new ComputerInfo();
+            memoryTimer = new System.Windows.Forms.Timer { Interval = 2000 };
+            memoryTimer.Tick += MemoryTimer_Tick;
+            processTimer = new System.Windows.Forms.Timer { Interval = 2000 };
+            processTimer.Tick += ProcessTimer_Tick;
         }
 
         private void FrmMain_Load(object sender, EventArgs e)
         {
-            InitializeCheckThread();
-
-            Thread ProcessManager = new Thread(InitializeProcessManager);
-            ProcessManager.IsBackground = true;
-            ProcessManager.Start();
+            MemoryTimer_Tick(this, EventArgs.Empty);
+            ProcessTimer_Tick(this, EventArgs.Empty);
+            memoryTimer.Start();
+            processTimer.Start();
         }
 
         private void CloseBox1_Clicked(object sender, EventArgs e)
         {
+            StopMonitoring();
             Application.Exit();
-        }
-
-        private void InitializeCheckThread()
-        {
-            Task.Run(() => 
-            {
-                while (true)
-                {
-                    TotalPhysicalMemorySize = Convert.ToInt64(Machine.TotalPhysicalMemory);
-                    FreePhysicalMemory = Convert.ToInt64(Machine.AvailablePhysicalMemory);
-
-                    //TotalVirtualMemorySize = Convert.ToInt64(Machine.TotalVirtualMemory);
-                    //FreeVirtualMemory = Convert.ToInt64(Machine.AvailableVirtualMemory);
-
-                    ObjectQuery wql = new ObjectQuery("SELECT * FROM Win32_OperatingSystem");
-                    ManagementObjectSearcher searcher = new ManagementObjectSearcher(wql);
-                    ManagementObjectCollection results = searcher.Get();
-
-                    foreach (ManagementObject result in results)
-                    {
-                        if (long.TryParse(result["TotalVirtualMemorySize"].ToString(), out long totalVirtualMemorySize))
-                        {
-                            TotalVirtualMemorySize = totalVirtualMemorySize;
-                        }
-
-                        if (long.TryParse(result["FreeVirtualMemory"].ToString(), out long freeVirtualMemory))
-                        {
-                            FreeVirtualMemory = freeVirtualMemory;
-                        }
-                    }
-                    Thread.Sleep(MEMORY_CHECK_INTERVAL_MS);
-                }
-            });
         }
 
         private void BT_FreeMemory_Click(object sender, EventArgs e)
         {
-            ReleaseMemory();
+            ReleaseMemory(true);
         }
 
-        private void ReleaseMemory()
+        private async void ReleaseMemory(bool manual = false)
         {
-            if (!MemoryHelper.IsBusy)
+            if (MemoryHelper.IsBusy || shutdown.IsCancellationRequested) return;
+
+            SafeSetButtonEnabled(skyneT_Button1, false);
+            SafeUpdateButtonText(skyneT_Button1, "RELEASING...");
+            try
             {
-                // Disable button and show visual feedback
-                SafeSetButtonEnabled(skyneT_Button1, false);
-                SafeUpdateButtonText(skyneT_Button1, "RELEASING...");
-
-                Task.Run(() =>
+                long desiredAvailable = Math.Max(256L * 1024 * 1024, TotalPhysicalMemorySize / 10);
+                long target = Math.Max(64L * 1024 * 1024, desiredAvailable - FreePhysicalMemory);
+                var result = await MemoryHelper.ReleaseMemoryAsync(target, shutdown.Token);
+                if (!result.WasSkipped)
                 {
-                    MemoryHelper.ReleaseMemory();
-
-                    // Re-enable button after operation completes
-                    System.Threading.Thread.Sleep(500); // Small delay to show feedback
+                    ReleasedTimes++;
+                    Program.Write($"Memory release requested ({(manual ? "manual" : "automatic")}): {result.ProcessesOptimized} processes, {modCommon.LongToMbytes(result.EstimatedBytesFreed)} estimated released");
+                }
+            }
+            catch (OperationCanceledException) { }
+            catch (Exception ex) { Program.WriteException("Memory release failed", ex); }
+            finally
+            {
+                if (!IsDisposed && !shutdown.IsCancellationRequested)
+                {
                     SafeSetButtonEnabled(skyneT_Button1, true);
                     SafeUpdateButtonText(skyneT_Button1, "FREE MEMORY");
-                });
+                }
             }
+        }
+
+        private void MemoryTimer_Tick(object sender, EventArgs e)
+        {
+            if (shutdown.IsCancellationRequested) return;
+            TotalPhysicalMemorySize = Convert.ToInt64(Machine.TotalPhysicalMemory);
+            if (TotalPhysicalMemorySize <= 0) return;
+            FreePhysicalMemory = Convert.ToInt64(Machine.AvailablePhysicalMemory);
+
+            long percent = TotalPhysicalMemorySize == 0 ? 0 : 100 * UsedPhysicalMemory / TotalPhysicalMemorySize;
+            if (percent >= percentToFree) consecutiveHighMemorySamples++;
+            else consecutiveHighMemorySamples = 0;
+
+            // Hysteresis prevents repeating trims while Windows is still settling after a cleanup.
+            if (percent <= Math.Max(1, percentToFree - 10)) memoryPressure = false;
+            // Four samples at two seconds ensure the activity tracker has observed candidates long enough.
+            if (!memoryPressure && consecutiveHighMemorySamples >= 4)
+            {
+                memoryPressure = true;
+                ReleaseMemory();
+            }
+
+            if (!samplingActivity)
+            {
+                samplingActivity = true;
+                Task.Run(() => MemoryHelper.CaptureProcessActivity())
+                    .ContinueWith(_ =>
+                    {
+                        try { if (!IsDisposed && IsHandleCreated) BeginInvoke(new Action(() => samplingActivity = false)); }
+                        catch (InvalidOperationException) { }
+                    });
+            }
+        }
+
+        private void StopMonitoring()
+        {
+            if (shutdown.IsCancellationRequested) return;
+            memoryTimer.Stop();
+            processTimer.Stop();
+            shutdown.Cancel();
+            notifyIcon1.Visible = false;
+            foreach (ProcessControl control in PN_ProcessContainer.Controls.OfType<ProcessControl>().ToArray()) control.ReleaseProcess();
+        }
+
+        protected override void OnFormClosing(FormClosingEventArgs e)
+        {
+            StopMonitoring();
+            base.OnFormClosing(e);
         }
 
         private void TextBox1_TextChanged(object sender, EventArgs e)
@@ -332,6 +360,7 @@ namespace SKYNET
         // Thread-safe UI update methods
         private void SafeUpdateLabel(Label label, string text)
         {
+            if (IsDisposed || label.IsDisposed || !label.IsHandleCreated) return;
             if (label.InvokeRequired)
             {
                 label.BeginInvoke(new Action(() => label.Text = text));
@@ -344,6 +373,7 @@ namespace SKYNET
 
         private void SafeSetProgressValue(SKYNET_ProgressBar progress, long percent)
         {
+            if (IsDisposed || progress.IsDisposed || !progress.IsHandleCreated) return;
             if (progress.InvokeRequired)
             {
                 progress.BeginInvoke(new Action(() => progress.Value = (int)percent));
@@ -356,6 +386,7 @@ namespace SKYNET
 
         private void SafeSetButtonEnabled(Control button, bool enabled)
         {
+            if (IsDisposed || button.IsDisposed || !button.IsHandleCreated) return;
             if (button.InvokeRequired)
             {
                 button.BeginInvoke(new Action(() => button.Enabled = enabled));
@@ -368,6 +399,7 @@ namespace SKYNET
 
         private void SafeUpdateButtonText(Control button, string text)
         {
+            if (IsDisposed || button.IsDisposed || !button.IsHandleCreated) return;
             if (button.InvokeRequired)
             {
                 button.BeginInvoke(new Action(() => button.Text = text));
@@ -378,6 +410,70 @@ namespace SKYNET
             }
         }
 
+        private void ProcessTimer_Tick(object sender, EventArgs e)
+        {
+            if (shutdown.IsCancellationRequested) return;
+            var allProcesses = new List<Process>();
+            var handedToControl = new HashSet<Process>();
+            try
+            {
+                foreach (var process in Process.GetProcesses())
+                {
+                    try { if (!process.HasExited) allProcesses.Add(process); else process.Dispose(); }
+                    catch { process.Dispose(); }
+                }
+
+                Processes = allProcesses.OrderByDescending(SafeWorkingSet).Take(TOP_PROCESSES_COUNT).ToList();
+                var displayedIds = new HashSet<int>(Processes.Select(p => p.Id));
+                foreach (var process in Processes)
+                {
+                    var found = PN_ProcessContainer.Controls.Find(process.Id.ToString(), false);
+                    if (found.Any())
+                    {
+                        ((ProcessControl)found[0]).CheckMemoryUse();
+                        continue;
+                    }
+
+                    var processControl = new ProcessControl();
+                    processControl.ManageProcess(process);
+                    processControl.Name = process.Id.ToString();
+                    processControl.ProcessExited += ProcessExited;
+                    processControl.Dock = DockStyle.Top;
+                    PN_ProcessContainer.Controls.Add(processControl);
+                    handedToControl.Add(process);
+                }
+
+                foreach (ProcessControl control in PN_ProcessContainer.Controls.OfType<ProcessControl>().ToArray())
+                {
+                    if (!displayedIds.Contains(control.ProcessId))
+                    {
+                        PN_ProcessContainer.Controls.Remove(control);
+                        control.ReleaseProcess();
+                        control.Dispose();
+                    }
+                }
+
+                for (int i = 0; i < Processes.Count; i++)
+                {
+                    var found = PN_ProcessContainer.Controls.Find(Processes[i].Id.ToString(), false);
+                    if (found.Any()) PN_ProcessContainer.Controls.SetChildIndex(found[0], i);
+                }
+            }
+            catch (Exception ex) { Program.Write("Error updating process list: " + ex.Message); }
+            finally
+            {
+                foreach (var process in allProcesses.Where(p => !handedToControl.Contains(p))) process.Dispose();
+            }
+        }
+
+        private static long SafeWorkingSet(Process process)
+        {
+            try { return process.WorkingSet64; }
+            catch { return 0; }
+        }
+
+        // Superseded by ProcessTimer_Tick. Retained temporarily only as a reference for the old implementation.
+#if false
         private void InitializeProcessManager()
         {
             while (true)
@@ -558,6 +654,7 @@ namespace SKYNET
             }
         }
 
+#endif
         private void ProcessExited(object sender, UserControl e)
         {
             try
@@ -566,11 +663,18 @@ namespace SKYNET
                 {
                     if (PN_ProcessContainer.InvokeRequired)
                     {
-                        PN_ProcessContainer.BeginInvoke(new Action(() => PN_ProcessContainer.Controls.Remove(e)));
+                        PN_ProcessContainer.BeginInvoke(new Action(() =>
+                        {
+                            PN_ProcessContainer.Controls.Remove(e);
+                            ((ProcessControl)e).ReleaseProcess();
+                            e.Dispose();
+                        }));
                     }
                     else
                     {
                         PN_ProcessContainer.Controls.Remove(e);
+                        ((ProcessControl)e).ReleaseProcess();
+                        e.Dispose();
                     }
                 }
             }

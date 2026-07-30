@@ -55,8 +55,6 @@ namespace SKYNET.GUI.Controls
                     PB_Icon.Image = new Icon(SystemIcons.Application, 32, 32).ToBitmap();
                 }
 
-                Process.Exited += Process_Exited;
-                WaitForExit();
             }
             catch (System.ComponentModel.Win32Exception)
             {
@@ -73,40 +71,11 @@ namespace SKYNET.GUI.Controls
             }
         }
 
-        private void WaitForExit()
+        public void ReleaseProcess()
         {
-            Task.Run(() =>
-            {
-                int closeId = 0;
-                string processName = "";
-                while (ProcessId != closeId)
-                {
-                    try
-                    {
-                        Process processById = Process.GetProcessById(ProcessId);
-                        processName = processById.ProcessName;
-                        closeId = ProcessId;
-                        processById.WaitForExit();
-                    }
-                    catch (System.ComponentModel.Win32Exception)
-                    {
-                        // Access denied - process exited
-                        Process_Exited(this, null);
-                    }
-                    catch (InvalidOperationException)
-                    {
-                        // Process exited
-                        Process_Exited(this, null);
-                    }
-                    catch (Exception ex)
-                    {
-                        // Only log unexpected errors
-                        Program.Write("Unexpected error waiting for process exit: " + ex.GetType().Name + ": " + ex.Message);
-                        Process_Exited(this, null);
-                    }
-                }
-                Process_Exited(this, null);
-            });
+            try { Process?.Dispose(); }
+            catch { }
+            Process = null;
         }
         private void Process_Exited(object sender, EventArgs e)
         {

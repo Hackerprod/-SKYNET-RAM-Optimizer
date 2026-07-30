@@ -1,210 +1,175 @@
-﻿using Microsoft.VisualBasic;
-using Microsoft.VisualBasic.Devices;
 using System;
 using System.Collections.Generic;
-using System.ComponentModel;
 using System.Diagnostics;
 using System.Linq;
 using System.Runtime.InteropServices;
-using System.Security.Principal;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace SKYNET
 {
-    public class MemoryHelper
+    public sealed class MemoryReleaseResult
     {
-        private const int MEMORY_RELEASE_COOLDOWN_SECONDS = 10;
-        private const long BYTES_TO_MB = 1048576L;
-        private const int SE_PRIVILEGE_ENABLED = 2;
+        public int ProcessesOptimized { get; internal set; }
+        public long EstimatedBytesFreed { get; internal set; }
+        public bool WasSkipped { get; internal set; }
+    }
 
-        public static bool IsBusy;
-        private static DateTime CleanedTime = DateTime.MinValue;
-        public static long TotalMemoryFreed = 0;  // Total memory freed in bytes
-        public static int TotalProcessesOptimized = 0;  // Total number of processes optimized
+    public static class MemoryHelper
+    {
+        private const long MinimumCandidateWorkingSet = 50L * 1024 * 1024;
+        private const int MaximumProcessesPerRun = 10;
+        private static readonly SemaphoreSlim ReleaseGate = new SemaphoreSlim(1, 1);
+        private static readonly object ActivityLock = new object();
+        private static readonly Dictionary<int, ProcessActivity> Activity = new Dictionary<int, ProcessActivity>();
 
-        // Critical system processes that should not be optimized
+        public static bool IsBusy { get { return ReleaseGate.CurrentCount == 0; } }
+        public static long TotalMemoryFreed;
+        public static int TotalProcessesOptimized;
+
         private static readonly HashSet<string> ExcludedProcesses = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
-            "csrss",
-            "dwm",
-            "explorer",
-            "lsass",
-            "services",
-            "smss",
-            "System",
-            "svchost",
-            "wininit",
-            "winlogon",
-            "audiodg",
-            "conhost",
-            "ntoskrnl"
+            "audiodg", "csrss", "dwm", "explorer", "fontdrvhost", "lsass", "memory compression",
+            "registry", "services", "sihost", "smss", "spoolsv", "startmenuexperiencehost", "system",
+            "svchost", "wininit", "winlogon", "searchhost", "shellexperiencehost", "taskhostw"
         };
 
-
-        public static void ReleaseMemory()
+        // Called periodically. A process needs two observations before it can be considered idle.
+        public static void CaptureProcessActivity()
         {
-            var span = DateTime.Now - CleanedTime;
-            if (span.Seconds < MEMORY_RELEASE_COOLDOWN_SECONDS)
+            DateTime now = DateTime.UtcNow;
+            var seen = new HashSet<int>();
+            foreach (Process process in Process.GetProcesses())
             {
-                return;
+                try
+                {
+                    if (process.HasExited) continue;
+                    seen.Add(process.Id);
+                    lock (ActivityLock)
+                    {
+                        ProcessActivity previous;
+                        if (Activity.TryGetValue(process.Id, out previous) && previous.StartTime == process.StartTime)
+                        {
+                            previous.LastCpu = process.TotalProcessorTime;
+                            previous.LastSeen = now;
+                        }
+                        else
+                        {
+                            Activity[process.Id] = new ProcessActivity { StartTime = process.StartTime, FirstSeen = now, LastCpu = process.TotalProcessorTime, LastSeen = now };
+                        }
+                    }
+                }
+                catch { /* inaccessible and exiting processes are never candidates */ }
+                finally { process.Dispose(); }
             }
 
-            Task.Run(delegate
+            lock (ActivityLock)
             {
-                IsBusy = true;
-                int processesOptimized = 0;
-                long memoryFreed = 0;
+                foreach (int id in Activity.Keys.Where(id => !seen.Contains(id)).ToArray()) Activity.Remove(id);
+            }
+        }
 
-                foreach (Process process in Process.GetProcesses().Where(process => process != null))
+        public static async Task<MemoryReleaseResult> ReleaseMemoryAsync(long targetBytes, CancellationToken cancellationToken)
+        {
+            if (!await ReleaseGate.WaitAsync(0, cancellationToken).ConfigureAwait(false))
+                return new MemoryReleaseResult { WasSkipped = true };
+
+            try
+            {
+                return await Task.Run(() => ReleaseIdleProcesses(targetBytes, cancellationToken), cancellationToken).ConfigureAwait(false);
+            }
+            finally { ReleaseGate.Release(); }
+        }
+
+        private static MemoryReleaseResult ReleaseIdleProcesses(long targetBytes, CancellationToken cancellationToken)
+        {
+            int currentProcessId = Process.GetCurrentProcess().Id;
+            int currentSessionId = Process.GetCurrentProcess().SessionId;
+            int foregroundProcessId = GetForegroundProcessId();
+            var candidates = new List<Process>();
+
+            foreach (Process process in Process.GetProcesses())
+            {
+                try
                 {
+                    if (IsSafeCandidate(process, currentProcessId, currentSessionId, foregroundProcessId)) candidates.Add(process);
+                    else process.Dispose();
+                }
+                catch { process.Dispose(); }
+            }
+
+            var result = new MemoryReleaseResult();
+            try
+            {
+                foreach (Process process in candidates.OrderByDescending(p => SafeWorkingSet(p)).Take(MaximumProcessesPerRun))
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    long before = SafeWorkingSet(process);
+                    if (before == 0) continue;
+
                     try
                     {
-                        // Check if we can access this process
-                        if (process.HasExited)
+                        if (EmptyWorkingSet(process.Handle) != 0)
                         {
-                            continue;
-                        }
-
-                        // Skip excluded critical system processes
-                        if (ExcludedProcesses.Contains(process.ProcessName))
-                        {
-                            continue;
-                        }
-
-                        long beforeMemory = 0;
-                        IntPtr handle = IntPtr.Zero;
-
-                        try
-                        {
-                            beforeMemory = process.WorkingSet64;
-                            handle = process.Handle;
-                        }
-                        catch (System.ComponentModel.Win32Exception)
-                        {
-                            // Access denied or 32/64 bit mismatch - skip this process
-                            continue;
-                        }
-                        catch (InvalidOperationException)
-                        {
-                            // Process exited - skip
-                            continue;
-                        }
-
-                        if (handle != IntPtr.Zero && !process.HasExited)
-                        {
-                            if (EmptyWorkingSet(handle) != 0)
+                            process.Refresh();
+                            long freed = Math.Max(0, before - SafeWorkingSet(process));
+                            if (freed > 0)
                             {
-                                // Success - track statistics
-                                try
-                                {
-                                    process.Refresh();
-                                    long afterMemory = process.WorkingSet64;
-                                    long freed = beforeMemory - afterMemory;
-                                    if (freed > 0)
-                                    {
-                                        memoryFreed += freed;
-                                        processesOptimized++;
-                                    }
-                                }
-                                catch
-                                {
-                                    // Process exited during refresh, count it anyway
-                                    processesOptimized++;
-                                }
+                                result.ProcessesOptimized++;
+                                result.EstimatedBytesFreed += freed;
+                                if (result.EstimatedBytesFreed >= targetBytes) break;
                             }
                         }
                     }
-                    catch (Exception ex)
-                    {
-                        // Log but continue with other processes
-                        if (!(ex is System.ComponentModel.Win32Exception || ex is InvalidOperationException))
-                        {
-                            Program.Write("Error releasing memory for process: " + ex.Message);
-                        }
-                    }
-                    finally
-                    {
-                        try
-                        {
-                            process?.Dispose();
-                        }
-                        catch { }
-                    }
-                }
-
-                TotalMemoryFreed += memoryFreed;
-                TotalProcessesOptimized += processesOptimized;
-                Program.Write($"Optimization complete: {processesOptimized} processes optimized, {modCommon.LongToMbytes(memoryFreed)} freed");
-
-                IsBusy = false;
-            });
-
-            frmMain.frm.ReleasedTimes++;
-            CleanedTime = DateTime.Now;
-        }
-
-        internal static bool SetIncreasePrivilege(string privilegeName)
-        {
-            using (WindowsIdentity current = WindowsIdentity.GetCurrent(TokenAccessLevels.Query | TokenAccessLevels.AdjustPrivileges | TokenAccessLevels.AllAccess))
-            {
-                TokenPrivileges newState;
-                newState.Count = 1;
-                newState.Luid = 0L;
-                newState.Attr = SE_PRIVILEGE_ENABLED;
-
-                // Retrieves the LUID used on a specified system to locally represent the specified privilege name
-                if (LookupPrivilegeValue(null, privilegeName, ref newState.Luid))
-                {
-                    // Enables or disables privileges in a specified access token
-                    int result = AdjustTokenPrivileges(current.Token, false, ref newState, 0, IntPtr.Zero, IntPtr.Zero) ? 1 : 0;
-
-                    return result != 0;
+                    catch { /* a process can exit or deny access between checks */ }
                 }
             }
-
-            return false;
-        }
-
-        #region Native Methods
-
-        [DllImport("psapi")]
-        public static extern int EmptyWorkingSet(IntPtr handle);
-
-        [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
-        [return: MarshalAs(UnmanagedType.Bool)]
-        internal static extern bool LookupPrivilegeValue(string lpSystemName, string lpName, ref long lpLuid);
-
-        [DllImport("advapi32.dll", SetLastError = true)]
-        [return: MarshalAs(UnmanagedType.Bool)]
-        internal static extern bool AdjustTokenPrivileges(IntPtr tokenHandle, [MarshalAs(UnmanagedType.Bool)]bool disableAllPrivileges, ref TokenPrivileges newState, int bufferLength, IntPtr previousState, IntPtr returnLength);
-
-
-        [StructLayout(LayoutKind.Sequential, Pack = 1)]
-        internal struct TokenPrivileges
-        {
-            internal int Count;
-
-            internal long Luid;
-
-            internal int Attr;
-        }
-
-        internal static long GetUsedMemory(Process process)
-        {
-            try
+            finally
             {
-                using (var counter = new PerformanceCounter("Process", "Working Set - Private", process.ProcessName))
-                {
-                    var memoryUse = counter.RawValue;
-                    return (memoryUse > BYTES_TO_MB ? memoryUse : process.WorkingSet64);
-                }
+                foreach (Process process in candidates) process.Dispose();
             }
-            catch
+
+            Interlocked.Add(ref TotalMemoryFreed, result.EstimatedBytesFreed);
+            Interlocked.Add(ref TotalProcessesOptimized, result.ProcessesOptimized);
+            Program.Write($"Optimization complete: {result.ProcessesOptimized} idle user processes trimmed, {modCommon.LongToMbytes(result.EstimatedBytesFreed)} estimated working set released");
+            return result;
+        }
+
+        private static bool IsSafeCandidate(Process process, int currentProcessId, int currentSessionId, int foregroundProcessId)
+        {
+            if (process.HasExited || process.Id == currentProcessId || process.Id == foregroundProcessId || process.SessionId != currentSessionId) return false;
+            if (ExcludedProcesses.Contains(process.ProcessName) || SafeWorkingSet(process) < MinimumCandidateWorkingSet) return false;
+
+            lock (ActivityLock)
             {
-                return process.WorkingSet64;
+                ProcessActivity activity;
+                // Do not act on a process that has not been observed idle for at least five seconds.
+                return Activity.TryGetValue(process.Id, out activity) && activity.StartTime == process.StartTime &&
+                       DateTime.UtcNow - activity.FirstSeen >= TimeSpan.FromSeconds(5) &&
+                       DateTime.UtcNow - activity.LastSeen < TimeSpan.FromSeconds(5) &&
+                       process.TotalProcessorTime - activity.LastCpu < TimeSpan.FromMilliseconds(100);
             }
         }
 
-        #endregion
+        private static long SafeWorkingSet(Process process) { try { return process.WorkingSet64; } catch { return 0; } }
+
+        internal static long GetUsedMemory(Process process) { return SafeWorkingSet(process); }
+
+        // The app runs with normal user-process access; no global debug privilege is required.
+        internal static bool SetIncreasePrivilege(string privilegeName) { return true; }
+
+        private static int GetForegroundProcessId()
+        {
+            uint id;
+            GetWindowThreadProcessId(GetForegroundWindow(), out id);
+            return unchecked((int)id);
+        }
+
+        private sealed class ProcessActivity { public DateTime StartTime; public DateTime FirstSeen; public TimeSpan LastCpu; public DateTime LastSeen; }
+
+        [DllImport("psapi.dll", SetLastError = true)]
+        private static extern int EmptyWorkingSet(IntPtr handle);
+        [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
+        [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
     }
 }
